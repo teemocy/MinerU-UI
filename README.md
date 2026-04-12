@@ -4,12 +4,12 @@ This repository keeps the custom MinerU OCR layers separate from upstream MinerU
 
 ## Layout
 
-- `third_party/MinerU/`: upstream MinerU git submodule, tracking `https://github.com/opendatalab/MinerU.git` branch `release-3.0.0`
+- `third_party/MinerU/`: upstream MinerU git submodule, sourced from `https://github.com/opendatalab/MinerU.git`
 - `api/`: repo-owned overrides for the API/runtime files that differ from upstream
 - `webui/`: repo-owned leak-safe OCR WebUI sources
 - `deploy/`: Dockerfiles, compose stack, and deploy scripts
 - `scripts/apply_customizations.sh`: overlays `api/` and `webui/` onto a MinerU source tree
-- `scripts/sync_mineru.sh`: syncs the submodule to the latest commit on the configured upstream branch
+- `scripts/sync_mineru.sh`: syncs the submodule to the newest upstream `mineru-*` release tag
 
 ## Why This Layout
 
@@ -25,7 +25,13 @@ The goal is to avoid carrying a full MinerU fork in this repository.
 ./scripts/sync_mineru.sh
 ```
 
-That updates `third_party/MinerU` to the latest commit from the submodule's configured branch in `.gitmodules`.
+That updates `third_party/MinerU` to the newest tag matching `mineru-*`.
+
+You can override the tag pattern if needed:
+
+```bash
+MINERU_TAG_PATTERN='mineru-*' ./scripts/sync_mineru.sh
+```
 
 ## Apply Local Customizations Manually
 
