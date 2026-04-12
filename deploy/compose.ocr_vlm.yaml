@@ -1,0 +1,100 @@
+name: mineru-ocr-vlm
+
+services:
+  mineru-openai-server:
+    build:
+      context: ..
+      dockerfile: deploy/docker/Dockerfile.mineru-vlm-server
+    image: mineru-ocr-vlm-server:local
+    container_name: mineru-ocr-vlm-server-stack
+    restart: unless-stopped
+    ports:
+      - "${MINERU_OPENAI_PORT:-30000}:30000"
+    environment:
+      MINERU_MODEL_SOURCE: ${MINERU_MODEL_SOURCE:-huggingface}
+    command:
+      - --host
+      - 0.0.0.0
+      - --port
+      - "30000"
+    volumes:
+      - ../output/docker-cache/huggingface:/root/.cache/huggingface
+      - ../output/docker-cache/modelscope:/root/.cache/modelscope
+    ulimits:
+      memlock: -1
+      stack: 67108864
+    ipc: host
+    healthcheck:
+      test: ["CMD-SHELL", "curl -fsS http://127.0.0.1:30000/health || exit 1"]
+      interval: 15s
+      timeout: 10s
+      retries: 20
+      start_period: 30s
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: ${MINERU_OPENAI_GPU_COUNT:-1}
+              capabilities: [gpu]
+
+  mineru-api:
+    build:
+      context: ..
+      dockerfile: deploy/docker/Dockerfile.mineru-ocr-api
+    image: mineru-ocr-api:local
+    container_name: mineru-ocr-api-stack
+    restart: unless-stopped
+    depends_on:
+      mineru-openai-server:
+        condition: service_started
+    ports:
+      - "${MINERU_API_PORT:-8000}:8000"
+    environment:
+      MINERU_API_MAX_CONCURRENT_REQUESTS: ${MINERU_API_MAX_CONCURRENT_REQUESTS:-3}
+      MINERU_VLM_HTTP_MAX_CONCURRENCY: ${MINERU_VLM_HTTP_MAX_CONCURRENCY:-8}
+    command:
+      - --host
+      - 0.0.0.0
+      - --port
+      - "8000"
+    healthcheck:
+      test: ["CMD-SHELL", "curl -fsS http://127.0.0.1:8000/health || exit 1"]
+      interval: 15s
+      timeout: 10s
+      retries: 20
+      start_period: 10s
+
+  mineru-ocr-webui:
+    build:
+      context: ..
+      dockerfile: deploy/docker/Dockerfile.mineru-ocr-webui
+    image: mineru-ocr-webui:local
+    container_name: mineru-ocr-webui-stack
+    restart: unless-stopped
+    depends_on:
+      mineru-api:
+        condition: service_started
+    ports:
+      - "${MINERU_WEBUI_PORT:-7861}:7861"
+    command:
+      - --host
+      - 0.0.0.0
+      - --port
+      - "7861"
+      - --api-url
+      - http://mineru-api:8000
+      - --server-url
+      - http://mineru-openai-server:30000
+      - --output-root
+      - /data/ocr-webui
+    volumes:
+      - ../output/ocr-webui:/data/ocr-webui
+      # Uncomment and adjust to enable "Batch Directory Path" against host files.
+      # - ../demo:/data/input:ro
+    healthcheck:
+      test: ["CMD-SHELL", "curl -fsS http://127.0.0.1:7861/ >/dev/null || exit 1"]
+      interval: 15s
+      timeout: 10s
+      retries: 20
+      start_period: 10s

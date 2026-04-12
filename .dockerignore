@@ -1,0 +1,11 @@
+.git
+.gitmodules
+.codex
+.venv
+.pytest_cache
+__pycache__
+*.pyc
+*.pyo
+*.pyd
+output
+third_party/MinerU/.git
