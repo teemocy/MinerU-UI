@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from collections import Counter
 from copy import deepcopy
 from dataclasses import dataclass
 from math import ceil
@@ -27,6 +28,11 @@ _WORD_PATTERN = re.compile(r"\w+", re.UNICODE)
 _DOCX_TOC_LINE_PATTERN = re.compile(
     r"^(?P<title>.+?)(?:[\t\s\.·…\-]{2,}|\t)(?P<page>\d+)\s*$"
 )
+_PDF_HEADING_PATTERNS = [
+    re.compile(r"^Chapter\s+([A-Z]\d+)\s+(.+)", re.MULTILINE),
+    re.compile(r"^Chapter\s+(\d+)[.:]?\s*(.*)", re.MULTILINE),
+    re.compile(r"^(\d+)\.\s+([A-Z][A-Za-z\s&\-]+)", re.MULTILINE),
+]
 _PDF_PAGE_CLONE_IGNORE_FIELDS = ("/Annots", "/Parent", "/B", "/StructParents")
 
 
@@ -96,6 +102,20 @@ class PreparedDocument:
 class _DocxTocEntry:
     title: str
     page_number: int | None
+
+
+@dataclass
+class _TocNode:
+    """A node in the PDF bookmark hierarchy tree."""
+    title: str
+    start_page: int  # 0-based
+    end_page: int = -1  # 0-based inclusive, filled later
+    level: int = 1
+    children: list["_TocNode"] | None = None
+
+    def __post_init__(self):
+        if self.children is None:
+            self.children = []
 
 
 class TOCSemanticSplitter:
@@ -178,10 +198,30 @@ class TOCSemanticSplitter:
                 chunks=(chunk,),
             )
 
-        chapter_spans = self._extract_pdf_chapter_spans(path, total_pages)
+        # Strategy 1: Hierarchical bookmark-based splitting
+        tree = self._build_pdf_toc_tree(path, total_pages)
+        chapter_spans: list[ChapterSpan] = []
+        if tree:
+            chapter_spans = self._toc_tree_to_spans(tree)
+            if chapter_spans:
+                logger.info(
+                    "Hierarchical bookmark split: {} chunks for {}",
+                    len(chapter_spans), path.name,
+                )
+
+        # Strategy 2: Text pattern detection
+        if not chapter_spans:
+            chapter_spans = self._detect_pdf_text_patterns(path, total_pages)
+
+        # Strategy 3: Font-size heuristic
+        if not chapter_spans:
+            chapter_spans = self._detect_pdf_font_size(path, total_pages)
+
+        # Strategy 4: Fixed-size fallback
         if not chapter_spans:
             notes.append(
-                "No usable PDF bookmarks were found; falling back to fixed-size page windows."
+                "No bookmarks, text patterns, or font-size headings found; "
+                "falling back to fixed-size page windows."
             )
             chapter_spans = self._build_uniform_page_spans(total_pages)
 
@@ -323,65 +363,6 @@ class TOCSemanticSplitter:
             notes=tuple(notes),
         )
 
-    def _extract_pdf_chapter_spans(
-        self,
-        path: Path,
-        total_pages: int,
-    ) -> list[ChapterSpan]:
-        entries = self._read_pdf_bookmarks(path)
-        if not entries:
-            return []
-
-        top_entries = [entry for entry in entries if entry.level == 1]
-        if not top_entries:
-            top_entries = entries
-
-        ordered: list[BookmarkEntry] = []
-        last_page = -1
-        for entry in sorted(top_entries, key=lambda x: x.page_index):
-            if entry.page_index < 0 or entry.page_index >= total_pages:
-                continue
-            if entry.page_index <= last_page:
-                continue
-            ordered.append(entry)
-            last_page = entry.page_index
-
-        if not ordered:
-            return []
-
-        spans: list[ChapterSpan] = []
-        if ordered[0].page_index > 0:
-            spans.append(
-                ChapterSpan(
-                    title="Front Matter",
-                    start=0,
-                    end=ordered[0].page_index,
-                    pages=ordered[0].page_index,
-                    source="bookmark-front-matter",
-                )
-            )
-
-        for index, entry in enumerate(ordered):
-            start = entry.page_index
-            end = (
-                ordered[index + 1].page_index
-                if index + 1 < len(ordered)
-                else total_pages
-            )
-            if end <= start:
-                continue
-            spans.append(
-                ChapterSpan(
-                    title=entry.title or f"Chapter {index + 1}",
-                    start=start,
-                    end=end,
-                    pages=end - start,
-                    source="bookmark",
-                )
-            )
-
-        return spans
-
     def _read_pdf_bookmarks(self, path: Path) -> list[BookmarkEntry]:
         entries = self._read_pdf_bookmarks_with_pymupdf(path)
         if entries:
@@ -452,6 +433,250 @@ class TOCSemanticSplitter:
         walk(outline, 1)
         return entries
 
+    def _build_pdf_toc_tree(
+        self,
+        path: Path,
+        total_pages: int,
+    ) -> list[_TocNode]:
+        """Build a hierarchical bookmark tree from PDF bookmarks.
+
+        Returns root-level nodes.  Front matter (pages before the first
+        bookmark) is merged into the first root node.
+        """
+        entries = self._read_pdf_bookmarks(path)
+        if not entries:
+            return []
+
+        # De-duplicate consecutive entries pointing to the same page
+        deduped: list[BookmarkEntry] = []
+        last_page = -1
+        for entry in entries:
+            if entry.page_index == last_page:
+                continue
+            deduped.append(entry)
+            last_page = entry.page_index
+
+        if not deduped:
+            return []
+
+        # Build tree using a stack of ancestor nodes
+        root_nodes: list[_TocNode] = []
+        stack: list[_TocNode] = []
+
+        for entry in deduped:
+            node = _TocNode(
+                title=entry.title,
+                start_page=entry.page_index,
+                level=entry.level,
+            )
+            # Pop until we find the parent (stack top level < current level)
+            while stack and stack[-1].level >= entry.level:
+                stack.pop()
+
+            if stack:
+                stack[-1].children.append(node)
+            else:
+                root_nodes.append(node)
+            stack.append(node)
+
+        # Assign end_page to each node
+        self._compute_toc_end_pages(root_nodes, total_pages)
+
+        # Merge front matter into the first root node
+        if root_nodes and root_nodes[0].start_page > 0:
+            root_nodes[0].start_page = 0
+
+        return root_nodes
+
+    def _compute_toc_end_pages(
+        self,
+        nodes: list[_TocNode],
+        total_pages: int,
+    ) -> None:
+        """Assign end_page to each node (mutates in-place)."""
+        for i, node in enumerate(nodes):
+            if i + 1 < len(nodes):
+                node.end_page = nodes[i + 1].start_page - 1
+            else:
+                node.end_page = total_pages - 1
+            self._compute_toc_end_pages(node.children, total_pages)
+
+    def _toc_tree_to_spans(
+        self,
+        nodes: list[_TocNode],
+    ) -> list[ChapterSpan]:
+        """Walk the TocNode tree to produce ChapterSpan objects.
+
+        - Node within page limit -> emit as single span
+        - Oversized node with children -> recurse into children
+        - Oversized leaf node -> fixed-size split via _split_large_pdf_chapter
+        - Trailing pages after last child are captured as a separate span
+        """
+        spans: list[ChapterSpan] = []
+
+        for node in nodes:
+            page_count = node.end_page - node.start_page + 1
+            if page_count <= 0:
+                continue
+
+            if page_count <= self.max_pages_per_request:
+                spans.append(ChapterSpan(
+                    title=node.title,
+                    start=node.start_page,
+                    end=node.end_page + 1,  # exclusive end
+                    pages=page_count,
+                    source="bookmark",
+                ))
+            elif node.children:
+                # Leading pages before first child
+                first_child_start = node.children[0].start_page
+                if first_child_start > node.start_page:
+                    leading_count = first_child_start - node.start_page
+                    leading_span = ChapterSpan(
+                        title=f"{node.title} (intro)",
+                        start=node.start_page,
+                        end=first_child_start,  # exclusive
+                        pages=leading_count,
+                        source="bookmark-leading",
+                    )
+                    if leading_count <= self.max_pages_per_request:
+                        spans.append(leading_span)
+                    else:
+                        for group in self._split_large_pdf_chapter(leading_span):
+                            spans.extend(group)
+
+                # Recurse into sub-chapters
+                spans.extend(self._toc_tree_to_spans(node.children))
+
+                # Capture trailing pages after last child
+                last_child_end = node.children[-1].end_page
+                if last_child_end < node.end_page:
+                    trailing_count = node.end_page - last_child_end
+                    trailing_span = ChapterSpan(
+                        title=f"{node.title} (appendix)",
+                        start=last_child_end + 1,
+                        end=node.end_page + 1,  # exclusive end
+                        pages=trailing_count,
+                        source="bookmark-trailing",
+                    )
+                    if trailing_count <= self.max_pages_per_request:
+                        spans.append(trailing_span)
+                    else:
+                        groups = self._split_large_pdf_chapter(trailing_span)
+                        for group in groups:
+                            spans.extend(group)
+            else:
+                # Oversized leaf -> fixed-size split
+                oversized = ChapterSpan(
+                    title=node.title,
+                    start=node.start_page,
+                    end=node.end_page + 1,  # exclusive end
+                    pages=page_count,
+                    source="bookmark-oversize",
+                )
+                groups = self._split_large_pdf_chapter(oversized)
+                for group in groups:
+                    spans.extend(group)
+
+        return spans
+
+    def _validate_pdf_heading(self, page_text_blocks: dict, match_text: str) -> bool:
+        """Check if matched text uses a larger or bold font (heuristic)."""
+        for block in page_text_blocks.get("blocks", []):
+            if block.get("type") != 0:
+                continue
+            for line in block.get("lines", []):
+                for span in line.get("spans", []):
+                    text = span.get("text", "").strip()
+                    if match_text in text and len(text) > 3:
+                        size = span.get("size", 0)
+                        flags = span.get("flags", 0)
+                        is_bold = bool(flags & (1 << 4))
+                        if size >= 12 or (is_bold and size >= 10):
+                            return True
+        return False
+
+    def _detect_pdf_text_patterns(
+        self,
+        path: Path,
+        total_pages: int,
+    ) -> list[ChapterSpan]:
+        """Detect chapters by scanning PDF pages for heading text patterns.
+
+        Returns ChapterSpan list, or empty list if nothing detected.
+        """
+        try:
+            import fitz
+        except ImportError:
+            return []
+
+        doc = None
+        try:
+            doc = fitz.open(str(path))
+            boundaries: list[tuple[int, str]] = []
+            seen_pages: set[int] = set()
+
+            for page_idx in range(doc.page_count):
+                page = doc[page_idx]
+                text = page.get_text()
+                if not text:
+                    continue
+
+                blocks = page.get_text("dict")
+
+                for pattern in _PDF_HEADING_PATTERNS:
+                    for match in pattern.finditer(text):
+                        matched_line = match.group(0).strip()
+                        if self._validate_pdf_heading(blocks, match.group(1)):
+                            if page_idx not in seen_pages:
+                                boundaries.append((page_idx, matched_line))
+                                seen_pages.add(page_idx)
+                            break  # one match per page is enough
+
+            if not boundaries:
+                return []
+
+            # Build ChapterSpan objects
+            spans: list[ChapterSpan] = []
+
+            # Handle front matter (pages before first detected heading)
+            if boundaries[0][0] > 0:
+                first_page = boundaries[0][0]
+                spans.append(ChapterSpan(
+                    title="Front Matter",
+                    start=0,
+                    end=first_page,  # exclusive
+                    pages=first_page,
+                    source="text-pattern-front-matter",
+                ))
+
+            for i, (start_page, title) in enumerate(boundaries):
+                end_page = (
+                    boundaries[i + 1][0]
+                    if i + 1 < len(boundaries)
+                    else total_pages
+                )
+                spans.append(ChapterSpan(
+                    title=title,
+                    start=start_page,
+                    end=end_page,  # exclusive
+                    pages=end_page - start_page,
+                    source="text-pattern",
+                ))
+
+            logger.info(
+                "Detected {} chapters via text patterns in {}",
+                len(spans), path.name,
+            )
+            return spans
+
+        except Exception as exc:
+            logger.debug("Text pattern detection failed for {}: {}", path.name, exc)
+            return []
+        finally:
+            if doc is not None:
+                doc.close()
+
     def _build_uniform_page_spans(self, total_pages: int) -> list[ChapterSpan]:
         spans: list[ChapterSpan] = []
         cursor = 0
@@ -519,6 +744,108 @@ class TOCSemanticSplitter:
             part += 1
             cursor = end
         return groups
+
+    def _detect_pdf_font_size(
+        self,
+        path: Path,
+        total_pages: int,
+    ) -> list[ChapterSpan]:
+        """Detect chapters using font-size anomalies (last resort).
+
+        Estimates body text font size, then finds spans with significantly
+        larger text as implicit chapter headings.
+        """
+        try:
+            import fitz
+        except ImportError:
+            return []
+
+        doc = None
+        try:
+            doc = fitz.open(str(path))
+
+            # Estimate body font size by sampling pages
+            sizes: list[float] = []
+            sample_pages = min(20, doc.page_count)
+            step = max(1, doc.page_count // sample_pages)
+            for idx in range(0, doc.page_count, step):
+                blocks = doc[idx].get_text("dict").get("blocks", [])
+                for block in blocks:
+                    if block.get("type") != 0:
+                        continue
+                    for line in block.get("lines", []):
+                        for span in line.get("spans", []):
+                            sizes.append(span.get("size", 0))
+
+            if not sizes:
+                return []
+
+            body_size = float(Counter(sizes).most_common(1)[0][0])
+            threshold = body_size * 1.4
+
+            # Scan for anomalously large text
+            boundaries: list[tuple[int, str]] = []
+            seen_pages: set[int] = set()
+
+            for page_idx in range(doc.page_count):
+                blocks = doc[page_idx].get_text("dict").get("blocks", [])
+                for block in blocks:
+                    if block.get("type") != 0:
+                        continue
+                    for line in block.get("lines", []):
+                        for span in line.get("spans", []):
+                            text = span.get("text", "").strip()
+                            size = span.get("size", 0)
+                            if (
+                                size >= threshold
+                                and len(text) > 3
+                                and page_idx not in seen_pages
+                            ):
+                                boundaries.append((page_idx, text))
+                                seen_pages.add(page_idx)
+
+            if not boundaries:
+                return []
+
+            # Build ChapterSpan objects
+            spans: list[ChapterSpan] = []
+
+            if boundaries[0][0] > 0:
+                first_page = boundaries[0][0]
+                spans.append(ChapterSpan(
+                    title="Front Matter",
+                    start=0,
+                    end=first_page,
+                    pages=first_page,
+                    source="font-size-front-matter",
+                ))
+
+            for i, (start_page, title) in enumerate(boundaries):
+                end_page = (
+                    boundaries[i + 1][0]
+                    if i + 1 < len(boundaries)
+                    else total_pages
+                )
+                spans.append(ChapterSpan(
+                    title=title,
+                    start=start_page,
+                    end=end_page,
+                    pages=end_page - start_page,
+                    source="font-size",
+                ))
+
+            logger.info(
+                "Detected {} chapters via font-size heuristic in {}",
+                len(spans), path.name,
+            )
+            return spans
+
+        except Exception as exc:
+            logger.debug("Font-size detection failed for {}: {}", path.name, exc)
+            return []
+        finally:
+            if doc is not None:
+                doc.close()
 
     def _write_pdf_slice(
         self,
