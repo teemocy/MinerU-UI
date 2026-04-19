@@ -58,6 +58,7 @@ services:
       - 0.0.0.0
       - --port
       - "8000"
+      - --allow-public-http-client
     healthcheck:
       test: ["CMD-SHELL", "curl -fsS http://127.0.0.1:8000/health || exit 1"]
       interval: 15s
