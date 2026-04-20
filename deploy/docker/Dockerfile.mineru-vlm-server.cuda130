@@ -2,7 +2,8 @@ FROM vllm/vllm-openai:v0.16.0-cu130
 
 ENV PIP_NO_CACHE_DIR=1 \
     PYTHONDONTWRITEBYTECODE=1 \
-    PYTHONUNBUFFERED=1
+    PYTHONUNBUFFERED=1 \
+    FLASHINFER_DISABLE_VERSION_CHECK=1
 
 RUN apt-get update && \
     apt-get install -y --no-install-recommends \
