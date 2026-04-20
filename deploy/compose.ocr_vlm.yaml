@@ -4,7 +4,7 @@ services:
   mineru-openai-server:
     build:
       context: ..
-      dockerfile: deploy/docker/Dockerfile.mineru-vlm-server
+      dockerfile: deploy/docker/Dockerfile.mineru-vlm-server.cuda130
     image: mineru-ocr-vlm-server:local
     container_name: mineru-ocr-vlm-server-stack
     restart: unless-stopped
