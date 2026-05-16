@@ -492,14 +492,39 @@ class TOCSemanticSplitter:
         self,
         nodes: list[_TocNode],
         total_pages: int,
+        lower_bound: int = 0,
+        upper_bound: int | None = None,
     ) -> None:
-        """Assign end_page to each node (mutates in-place)."""
+        """Assign end_page to each node (mutates in-place).
+
+        Outline entries are not always ordered by page number, so siblings are
+        normalized into page order before ranges are computed.  Each child list
+        is also capped to the page range available inside its parent, which
+        prevents later outline entries from leaking into earlier chunks.
+        """
+        if upper_bound is None:
+            upper_bound = total_pages - 1
+
+        ordered = sorted(nodes, key=lambda node: node.start_page)
+        nodes[:] = [
+            node
+            for node in ordered
+            if lower_bound <= node.start_page <= upper_bound
+        ]
+
         for i, node in enumerate(nodes):
             if i + 1 < len(nodes):
-                node.end_page = nodes[i + 1].start_page - 1
+                next_start = nodes[i + 1].start_page - 1
             else:
-                node.end_page = total_pages - 1
-            self._compute_toc_end_pages(node.children, total_pages)
+                next_start = upper_bound
+
+            node.end_page = min(next_start, upper_bound)
+            self._compute_toc_end_pages(
+                node.children,
+                total_pages,
+                lower_bound=node.start_page,
+                upper_bound=node.end_page,
+            )
 
     def _toc_tree_to_spans(
         self,
@@ -515,6 +540,11 @@ class TOCSemanticSplitter:
         spans: list[ChapterSpan] = []
 
         for node in nodes:
+            children = [
+                child
+                for child in node.children
+                if child.end_page >= child.start_page and child.start_page >= node.start_page
+            ]
             page_count = node.end_page - node.start_page + 1
             if page_count <= 0:
                 continue
@@ -527,9 +557,9 @@ class TOCSemanticSplitter:
                     pages=page_count,
                     source="bookmark",
                 ))
-            elif node.children:
+            elif children:
                 # Leading pages before first child
-                first_child_start = node.children[0].start_page
+                first_child_start = children[0].start_page
                 if first_child_start > node.start_page:
                     leading_count = first_child_start - node.start_page
                     leading_span = ChapterSpan(
@@ -546,10 +576,10 @@ class TOCSemanticSplitter:
                             spans.extend(group)
 
                 # Recurse into sub-chapters
-                spans.extend(self._toc_tree_to_spans(node.children))
+                spans.extend(self._toc_tree_to_spans(children))
 
                 # Capture trailing pages after last child
-                last_child_end = node.children[-1].end_page
+                last_child_end = children[-1].end_page
                 if last_child_end < node.end_page:
                     trailing_count = node.end_page - last_child_end
                     trailing_span = ChapterSpan(
