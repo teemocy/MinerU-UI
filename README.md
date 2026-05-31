@@ -55,6 +55,11 @@ Start the full OCR VLM stack:
 docker compose -f deploy/compose.ocr_vlm.yaml up -d --build
 ```
 
+The full stack runs VLM inference in the separate `mineru-openai-server`
+container. Use `vlm-http-client` or `hybrid-http-client` in the WebUI when
+targeting that service. `*-auto-engine` backends run models locally inside the
+`mineru-api` container instead.
+
 Start only the WebUI against an already-running MinerU API:
 
 ```bash

@@ -1,5 +1,9 @@
 FROM python:3.11-slim
 
+ARG TORCH_VERSION=2.6.0+cpu
+ARG TORCHVISION_VERSION=0.21.0+cpu
+ARG TORCH_CPU_INDEX_URL=https://download.pytorch.org/whl/cpu
+
 ENV PIP_NO_CACHE_DIR=1 \
     PYTHONDONTWRITEBYTECODE=1 \
     PYTHONUNBUFFERED=1
@@ -10,7 +14,8 @@ RUN apt-get update && \
         fonts-noto-core \
         fonts-noto-cjk \
         libgl1 \
-        libglib2.0-0 && \
+        libglib2.0-0 \
+        libgomp1 && \
     apt-get clean && \
     rm -rf /var/lib/apt/lists/*
 
@@ -20,7 +25,12 @@ COPY . /app
 
 RUN /app/scripts/apply_customizations.sh /app/third_party/MinerU api && \
     python -m pip install --upgrade pip && \
-    python -m pip install -e /app/third_party/MinerU
+    python -m pip install --extra-index-url "${TORCH_CPU_INDEX_URL}" \
+        "torch==${TORCH_VERSION}" \
+        "torchvision==${TORCHVISION_VERSION}" && \
+    python -m pip install -e '/app/third_party/MinerU[pipeline]'
+
+RUN python -m pip install 'six>=1.17.0,<2'
 
 EXPOSE 8000
 
