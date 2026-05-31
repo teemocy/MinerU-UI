@@ -5,6 +5,8 @@ services:
     build:
       context: ..
       dockerfile: deploy/docker/Dockerfile.mineru-vlm-server.cuda130
+      args:
+        MINERU_VLM_BASE_IMAGE: ${MINERU_VLM_BASE_IMAGE:-vllm/vllm-openai:v0.21.0}
     image: mineru-ocr-vlm-server:local
     container_name: mineru-ocr-vlm-server-stack
     restart: unless-stopped

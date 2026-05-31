@@ -1,4 +1,6 @@
-FROM vllm/vllm-openai:v0.11.2
+# CUDA 12.9 fallback image for hosts whose driver cannot run the CUDA 13 image.
+ARG MINERU_VLM_BASE_IMAGE=vllm/vllm-openai:v0.21.0-cu129
+FROM ${MINERU_VLM_BASE_IMAGE}
 
 ENV PIP_NO_CACHE_DIR=1 \
     PYTHONDONTWRITEBYTECODE=1 \
@@ -20,8 +22,8 @@ WORKDIR /app
 
 COPY . /app
 
-RUN python3 -m pip install --upgrade pip && \
-    python3 -m pip install -e '/app/third_party/MinerU[vlm,vllm]'
+RUN python3 -m pip install --break-system-packages --upgrade pip && \
+    python3 -m pip install --break-system-packages -e '/app/third_party/MinerU[vlm,vllm]'
 
 EXPOSE 30000
 
