@@ -105,6 +105,7 @@ class ModelSingleton:
                     model = Qwen2VLForConditionalGeneration.from_pretrained(
                         model_path,
                         device_map={"": device},
+                        low_cpu_mem_usage=True,
                         **{dtype_key: "auto"},  # type: ignore
                     )
                     processor = AutoProcessor.from_pretrained(

@@ -30,7 +30,7 @@ RUN /app/scripts/apply_customizations.sh /app/third_party/MinerU api && \
         "torchvision==${TORCHVISION_VERSION}" && \
     python -m pip install -e '/app/third_party/MinerU[pipeline]'
 
-RUN python -m pip install 'six>=1.17.0,<2'
+RUN python -m pip install 'six>=1.17.0,<2' 'accelerate>=0.26.0,<2'
 
 EXPOSE 8000
 

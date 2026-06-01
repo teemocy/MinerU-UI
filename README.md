@@ -60,6 +60,15 @@ container. Use `vlm-http-client` or `hybrid-http-client` in the WebUI when
 targeting that service. `*-auto-engine` backends run models locally inside the
 `mineru-api` container instead.
 
+Start a single-GPU stack where `mineru-api` owns both VLM and pipeline models:
+
+```bash
+docker compose -f deploy/compose.ocr_single_gpu.yaml up -d --build
+```
+
+Use this when you want `hybrid-auto-engine` to run on the GPU and do not want a
+separate `mineru-openai-server`.
+
 Start only the WebUI against an already-running MinerU API:
 
 ```bash

@@ -260,8 +260,8 @@ class LeakSafeTaskManager:
                 finally:
                     shutil.rmtree(staged_input_dir, ignore_errors=True)
 
-            archive_path = self._build_result_archive(job_id, job_root)
             snapshot = self.get_job_snapshot(job_id)
+            archive_path = str(job_root / "results_bundle.zip")
             if snapshot["completed_chunks"] == 0 and snapshot["failed_chunks"] > 0:
                 self._update_job(
                     job_id,
@@ -272,6 +272,7 @@ class LeakSafeTaskManager:
                     current_source_file=None,
                     archive_path=archive_path,
                 )
+                self._build_result_archive(job_id, job_root)
                 return
 
             if snapshot["failed_chunks"] > 0:
@@ -291,6 +292,7 @@ class LeakSafeTaskManager:
                 current_source_file=None,
                 archive_path=archive_path,
             )
+            self._build_result_archive(job_id, job_root)
         except Exception as exc:
             logger.exception("Job failed: {}", job_id)
             self._update_job(

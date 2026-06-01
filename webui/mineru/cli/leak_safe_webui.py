@@ -27,6 +27,12 @@ from mineru.leak_safe_pipeline.webui import DEFAULT_VLM_SERVER_URL, launch
     ),
 )
 @click.option(
+    "--default-backend",
+    default="vlm-http-client",
+    show_default=True,
+    help="Backend selected by default in the WebUI.",
+)
+@click.option(
     "--output-root",
     default=str(Path(tempfile.gettempdir()) / "mineru-ocr-webui"),
     show_default=True,
@@ -37,6 +43,7 @@ def main(
     port: int,
     api_url: str,
     server_url: str,
+    default_backend: str,
     output_root: str,
 ) -> None:
     launch(
@@ -44,6 +51,7 @@ def main(
         port=port,
         default_api_url=api_url,
         default_server_url=server_url,
+        default_backend=default_backend,
         default_output_root=output_root,
     )
 

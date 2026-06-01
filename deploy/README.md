@@ -5,7 +5,24 @@ This directory holds the repo-owned deployment assets.
 - `docker/`: image definitions built from `this repo + third_party/MinerU`
 - `scripts/`: helper scripts for single-service deployment
 - `compose.ocr_vlm.yaml`: full stack for `mineru-openai-server`, `mineru-api`, and the custom OCR WebUI
+- `compose.ocr_single_gpu.yaml`: single-GPU stack where CUDA `mineru-api`
+  owns both VLM and pipeline models and the WebUI defaults to
+  `hybrid-auto-engine`
 
 In the compose stack, choose `vlm-http-client` or `hybrid-http-client` in the
 WebUI so OCR requests use the `mineru-openai-server` container. The `*-auto-engine`
 backends run VLM locally inside `mineru-api`.
+
+For one GPU, prefer the single-GPU stack if you want `hybrid-auto-engine` to use
+GPU acceleration without a separate OpenAI-compatible VLM server:
+
+```bash
+docker compose -f deploy/compose.ocr_single_gpu.yaml up -d --build
+```
+
+This deployment removes `mineru-openai-server`; `mineru-api` is built from a
+vLLM CUDA image and receives the GPU reservation directly. Defaults are
+conservative for 16 GB cards: one API request at a time, hybrid batch ratio 1,
+processing window 16, and vLLM GPU memory utilization 0.5. Tune with
+`MINERU_VLLM_GPU_MEMORY_UTILIZATION`, `MINERU_HYBRID_BATCH_RATIO`, and
+`MINERU_PROCESSING_WINDOW_SIZE` after confirming VRAM headroom.

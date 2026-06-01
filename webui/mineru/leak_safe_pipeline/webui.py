@@ -337,8 +337,12 @@ def build_app(
     *,
     default_api_url: str = "http://127.0.0.1:8000",
     default_server_url: str = DEFAULT_VLM_SERVER_URL,
+    default_backend: str = "vlm-http-client",
     default_output_root: str = str(TEMP_WORKSPACE_ROOT),
 ) -> gr.Blocks:
+    if default_backend not in BACKEND_CHOICES:
+        default_backend = "vlm-http-client"
+
     with gr.Blocks(title="MinerU OCR WebUI") as app:
         gr.Markdown(
             "# MinerU Leak-Safe OCR Pipeline\n"
@@ -364,7 +368,7 @@ def build_app(
             backend = gr.Dropdown(
                 label="Backend",
                 choices=BACKEND_CHOICES,
-                value="vlm-http-client",
+                value=default_backend,
             )
             parse_method = gr.Radio(
                 label="Parse Method",
@@ -459,12 +463,14 @@ def launch(
     port: int = 7861,
     default_api_url: str = "http://127.0.0.1:8000",
     default_server_url: str = DEFAULT_VLM_SERVER_URL,
+    default_backend: str = "vlm-http-client",
     default_output_root: str = str(TEMP_WORKSPACE_ROOT),
 ) -> None:
     _prepare_launch_workspace(default_output_root)
     app = build_app(
         default_api_url=default_api_url,
         default_server_url=default_server_url,
+        default_backend=default_backend,
         default_output_root=default_output_root,
     )
     app.launch(server_name=host, server_port=port)

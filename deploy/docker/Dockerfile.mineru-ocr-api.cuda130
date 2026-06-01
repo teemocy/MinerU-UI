@@ -1,0 +1,39 @@
+# Single-process CUDA API image for `*-auto-engine` backends.
+#
+# This image intentionally uses the same vLLM base as the standalone
+# mineru-openai-server image, then installs both VLM and pipeline extras so
+# `hybrid-auto-engine` can run VLM + hybrid side models in one GPU-owning API.
+ARG MINERU_VLM_BASE_IMAGE=vllm/vllm-openai:v0.21.0
+FROM ${MINERU_VLM_BASE_IMAGE}
+
+ENV PIP_NO_CACHE_DIR=1 \
+    PYTHONDONTWRITEBYTECODE=1 \
+    PYTHONUNBUFFERED=1 \
+    FLASHINFER_DISABLE_VERSION_CHECK=1
+
+RUN apt-get update && \
+    apt-get install -y --no-install-recommends \
+        curl \
+        fonts-noto-core \
+        fonts-noto-cjk \
+        fontconfig \
+        libgl1 \
+        libglib2.0-0 \
+        libgomp1 && \
+    fc-cache -fv && \
+    apt-get clean && \
+    rm -rf /var/lib/apt/lists/*
+
+WORKDIR /app
+
+COPY . /app
+
+RUN /app/scripts/apply_customizations.sh /app/third_party/MinerU api && \
+    python3 -m pip install --break-system-packages --upgrade pip && \
+    python3 -m pip install --break-system-packages -e '/app/third_party/MinerU[pipeline,vlm,vllm]' && \
+    python3 -m pip install --break-system-packages 'six>=1.17.0,<2'
+
+EXPOSE 8000
+
+ENTRYPOINT ["mineru-api"]
+CMD ["--host", "0.0.0.0", "--port", "8000"]
