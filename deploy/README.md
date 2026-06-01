@@ -26,3 +26,8 @@ conservative for 16 GB cards: one API request at a time, hybrid batch ratio 1,
 processing window 16, and vLLM GPU memory utilization 0.5. Tune with
 `MINERU_VLLM_GPU_MEMORY_UTILIZATION`, `MINERU_HYBRID_BATCH_RATIO`, and
 `MINERU_PROCESSING_WINDOW_SIZE` after confirming VRAM headroom.
+
+The WebUI's default chunk size is controlled by
+`MINERU_WEBUI_MAX_PAGES_PER_CHUNK` and can also be changed per job in the
+Execution Settings panel. Larger chunks reduce the number of API tasks but
+increase per-task memory use and retry cost.

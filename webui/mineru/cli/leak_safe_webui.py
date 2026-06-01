@@ -6,6 +6,7 @@ import tempfile
 import click
 
 from mineru.leak_safe_pipeline.webui import DEFAULT_VLM_SERVER_URL, launch
+from mineru.leak_safe_pipeline.splitter import MAX_PAGES_PER_REQUEST
 
 
 @click.command(help="Launch MinerU OCR WebUI")
@@ -38,6 +39,13 @@ from mineru.leak_safe_pipeline.webui import DEFAULT_VLM_SERVER_URL, launch
     show_default=True,
     help="Root directory for job artifacts",
 )
+@click.option(
+    "--default-max-pages-per-chunk",
+    default=MAX_PAGES_PER_REQUEST,
+    type=click.IntRange(min=1),
+    show_default=True,
+    help="Default value for the WebUI Max Pages Per Chunk setting.",
+)
 def main(
     host: str,
     port: int,
@@ -45,6 +53,7 @@ def main(
     server_url: str,
     default_backend: str,
     output_root: str,
+    default_max_pages_per_chunk: int,
 ) -> None:
     launch(
         host=host,
@@ -53,6 +62,7 @@ def main(
         default_server_url=server_url,
         default_backend=default_backend,
         default_output_root=output_root,
+        default_max_pages_per_request=default_max_pages_per_chunk,
     )
 
 

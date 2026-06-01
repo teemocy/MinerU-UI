@@ -119,7 +119,7 @@ class _TocNode:
 
 
 class TOCSemanticSplitter:
-    """Pre-processes PDFs and DOCXs so each MinerU request stays below 300 pages."""
+    """Pre-processes PDFs and DOCXs into configurable page-limited requests."""
 
     def __init__(
         self,
@@ -128,8 +128,6 @@ class TOCSemanticSplitter:
         docx_words_per_page: int = DOCX_WORDS_PER_PAGE,
         docx_safe_max_pages_without_exact_count: int = DOCX_SAFE_MAX_PAGES_WITHOUT_EXACT_COUNT,
     ) -> None:
-        if max_pages_per_request >= 300:
-            raise ValueError("max_pages_per_request must be lower than 300")
         if max_pages_per_request <= 0:
             raise ValueError("max_pages_per_request must be positive")
         if docx_words_per_page <= 0:
@@ -492,14 +490,16 @@ class TOCSemanticSplitter:
         self,
         nodes: list[_TocNode],
         total_pages: int,
+        end_page: int | None = None,
     ) -> None:
-        """Assign end_page to each node (mutates in-place)."""
+        """Assign end_page to each node, bounded by its parent section."""
+        section_end = total_pages - 1 if end_page is None else min(end_page, total_pages - 1)
         for i, node in enumerate(nodes):
             if i + 1 < len(nodes):
-                node.end_page = nodes[i + 1].start_page - 1
+                node.end_page = min(nodes[i + 1].start_page - 1, section_end)
             else:
-                node.end_page = total_pages - 1
-            self._compute_toc_end_pages(node.children, total_pages)
+                node.end_page = section_end
+            self._compute_toc_end_pages(node.children, total_pages, node.end_page)
 
     def _toc_tree_to_spans(
         self,
@@ -702,8 +702,18 @@ class TOCSemanticSplitter:
         current_group: list[ChapterSpan] = []
         current_pages = 0
 
-        for chapter in chapter_spans:
-            if chapter.pages > self.max_pages_per_request:
+        valid_spans = sorted(
+            (
+                chapter
+                for chapter in chapter_spans
+                if chapter.end > chapter.start and chapter.pages > 0
+            ),
+            key=lambda chapter: (chapter.start, chapter.end, chapter.title),
+        )
+
+        for chapter in valid_spans:
+            chapter_pages = chapter.end - chapter.start
+            if chapter_pages > self.max_pages_per_request:
                 if current_group:
                     grouped.append(current_group)
                     current_group = []
@@ -711,13 +721,13 @@ class TOCSemanticSplitter:
                 grouped.extend(self._split_large_pdf_chapter(chapter))
                 continue
 
-            if current_group and current_pages + chapter.pages > self.max_pages_per_request:
+            if current_group and current_pages + chapter_pages > self.max_pages_per_request:
                 grouped.append(current_group)
                 current_group = [chapter]
-                current_pages = chapter.pages
+                current_pages = chapter_pages
             else:
                 current_group.append(chapter)
-                current_pages += chapter.pages
+                current_pages += chapter_pages
 
         if current_group:
             grouped.append(current_group)
@@ -854,6 +864,13 @@ class TOCSemanticSplitter:
         end_page: int,
         output_path: Path,
     ) -> None:
+        total_pages = len(reader.pages)
+        if start_page < 0 or end_page > total_pages or start_page >= end_page:
+            raise ValueError(
+                f"Invalid PDF slice {start_page}:{end_page} for "
+                f"{total_pages} page(s); refusing to write an empty chunk."
+            )
+
         _, pdf_writer_cls = _load_pypdf_classes()
         writer = pdf_writer_cls()
         for page_index in range(start_page, end_page):

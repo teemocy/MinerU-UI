@@ -14,10 +14,11 @@ from mineru.leak_safe_pipeline.orchestrator import (
     LeakSafeTaskManager,
     OCRRequestConfig,
 )
+from mineru.leak_safe_pipeline.splitter import MAX_PAGES_PER_REQUEST
 
 
 SUPPORTED_SUFFIXES = {".pdf", ".docx"}
-TERMINAL_STATUSES = {"completed", "failed"}
+TERMINAL_STATUSES = {"completed", "completed_with_errors", "failed"}
 DEFAULT_VLM_SERVER_URL = "http://mineru-openai-server:30000"
 TEMP_WORKSPACE_ROOT = Path(tempfile.gettempdir()).resolve() / "mineru-ocr-webui"
 TEMP_DOWNLOAD_ROOT = Path(tempfile.gettempdir()).resolve() / "mineru-ocr-webui-downloads"
@@ -184,6 +185,17 @@ def _normalize_language_choice(language: str | None) -> str:
     return language.strip() or "ch"
 
 
+def _normalize_positive_int(value, field_name: str) -> int:
+    try:
+        normalized = int(value)
+    except (TypeError, ValueError) as exc:
+        raise ValueError(f"{field_name} must be a positive integer.") from exc
+
+    if normalized <= 0:
+        raise ValueError(f"{field_name} must be a positive integer.")
+    return normalized
+
+
 def _backend_supports_language_choice(backend: str | None) -> bool:
     if not backend:
         return False
@@ -264,6 +276,7 @@ def _stream_job(
     formula_enable,
     table_enable,
     server_url,
+    max_pages_per_request,
     output_root,
     timeout_seconds,
 ):
@@ -291,16 +304,31 @@ def _stream_job(
         )
         return
 
-    request = OCRRequestConfig(
-        api_url=_normalize_api_url(api_url),
-        backend=backend,
-        parse_method=parse_method,
-        language=_normalize_language_choice(language),
-        formula_enable=bool(formula_enable),
-        table_enable=bool(table_enable),
-        server_url=server_url.strip() or None,
-        timeout_seconds=int(timeout_seconds),
-    )
+    try:
+        request = OCRRequestConfig(
+            api_url=_normalize_api_url(api_url),
+            backend=backend,
+            parse_method=parse_method,
+            language=_normalize_language_choice(language),
+            formula_enable=bool(formula_enable),
+            table_enable=bool(table_enable),
+            server_url=server_url.strip() or None,
+            timeout_seconds=_normalize_positive_int(timeout_seconds, "Per Chunk Timeout"),
+            max_pages_per_request=_normalize_positive_int(
+                max_pages_per_request,
+                "Max Pages Per Chunk",
+            ),
+        )
+    except Exception as exc:
+        yield (
+            "",
+            f"**Settings Error:** {exc}",
+            0.0,
+            [],
+            "",
+            None,
+        )
+        return
 
     manager = _get_manager()
     job_id = manager.submit_job(
@@ -339,14 +367,17 @@ def build_app(
     default_server_url: str = DEFAULT_VLM_SERVER_URL,
     default_backend: str = "vlm-http-client",
     default_output_root: str = str(TEMP_WORKSPACE_ROOT),
+    default_max_pages_per_request: int = MAX_PAGES_PER_REQUEST,
 ) -> gr.Blocks:
     if default_backend not in BACKEND_CHOICES:
         default_backend = "vlm-http-client"
+    if default_max_pages_per_request <= 0:
+        default_max_pages_per_request = MAX_PAGES_PER_REQUEST
 
     with gr.Blocks(title="MinerU OCR WebUI") as app:
         gr.Markdown(
             "# MinerU Leak-Safe OCR Pipeline\n"
-            "One-doc-one-process execution with TOC/bookmark semantic splitting (<300 pages per request)."
+            "One-doc-one-process execution with configurable TOC/bookmark semantic splitting."
         )
 
         with gr.Row():
@@ -387,6 +418,12 @@ def build_app(
                 label="VLM Server URL (optional)",
                 value=default_server_url,
                 placeholder="http://127.0.0.1:30000",
+            )
+            max_pages_per_request = gr.Number(
+                label="Max Pages Per Chunk",
+                value=default_max_pages_per_request,
+                precision=0,
+                info="Larger chunks reduce task count but increase per-task runtime and memory use.",
             )
             output_root = gr.Textbox(
                 label="Job Output Root",
@@ -448,6 +485,7 @@ def build_app(
                 formula_enable,
                 table_enable,
                 server_url,
+                max_pages_per_request,
                 output_root,
                 timeout_seconds,
             ],
@@ -465,6 +503,7 @@ def launch(
     default_server_url: str = DEFAULT_VLM_SERVER_URL,
     default_backend: str = "vlm-http-client",
     default_output_root: str = str(TEMP_WORKSPACE_ROOT),
+    default_max_pages_per_request: int = MAX_PAGES_PER_REQUEST,
 ) -> None:
     _prepare_launch_workspace(default_output_root)
     app = build_app(
@@ -472,5 +511,6 @@ def launch(
         default_server_url=default_server_url,
         default_backend=default_backend,
         default_output_root=default_output_root,
+        default_max_pages_per_request=default_max_pages_per_request,
     )
     app.launch(server_name=host, server_port=port)

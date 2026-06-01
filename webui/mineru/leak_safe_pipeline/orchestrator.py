@@ -31,6 +31,7 @@ class OCRRequestConfig:
     table_enable: bool = True
     server_url: str | None = None
     timeout_seconds: int = 7200
+    max_pages_per_request: int = 299
 
 
 @dataclass
@@ -89,7 +90,7 @@ class LeakSafeTaskManager:
         if cleanup_workspace_on_start and self.workspace_root.exists():
             shutil.rmtree(self.workspace_root, ignore_errors=True)
         self.workspace_root.mkdir(parents=True, exist_ok=True)
-        self.splitter = splitter or TOCSemanticSplitter()
+        self.splitter = splitter
 
         self._lock = threading.Lock()
         self._jobs: dict[str, JobRecord] = {}
@@ -179,7 +180,10 @@ class LeakSafeTaskManager:
                 started_at=_utc_now_iso(),
             )
 
-            prepared_documents = self.splitter.prepare_many(inputs, prepared_dir)
+            splitter = self.splitter or TOCSemanticSplitter(
+                max_pages_per_request=request.max_pages_per_request
+            )
+            prepared_documents = splitter.prepare_many(inputs, prepared_dir)
             all_chunks = self._flatten_chunks(prepared_documents)
             notes = self._collect_notes(prepared_documents)
 
@@ -280,12 +284,14 @@ class LeakSafeTaskManager:
                     f"Completed with partial failures: {snapshot['completed_chunks']} succeeded, "
                     f"{snapshot['failed_chunks']} failed."
                 )
+                final_status = "completed_with_errors"
             else:
                 final_message = f"Completed successfully: {snapshot['completed_chunks']} chunk(s)."
+                final_status = "completed"
 
             self._update_job(
                 job_id,
-                status="completed",
+                status=final_status,
                 message=final_message,
                 finished_at=_utc_now_iso(),
                 current_chunk_id=None,
