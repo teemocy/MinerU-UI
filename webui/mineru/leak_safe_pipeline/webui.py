@@ -20,6 +20,9 @@ from mineru.leak_safe_pipeline.splitter import MAX_PAGES_PER_REQUEST
 SUPPORTED_SUFFIXES = {".pdf", ".docx"}
 TERMINAL_STATUSES = {"completed", "completed_with_errors", "failed"}
 DEFAULT_VLM_SERVER_URL = "http://mineru-openai-server:30000"
+DEFAULT_PROCESSING_WINDOW_SIZE = 64
+MAX_PROCESSING_WINDOW_SIZE = 64
+DEFAULT_CHUNK_TIMEOUT_SECONDS = 43200
 TEMP_WORKSPACE_ROOT = Path(tempfile.gettempdir()).resolve() / "mineru-ocr-webui"
 TEMP_DOWNLOAD_ROOT = Path(tempfile.gettempdir()).resolve() / "mineru-ocr-webui-downloads"
 BACKEND_CHOICES = [
@@ -185,7 +188,12 @@ def _normalize_language_choice(language: str | None) -> str:
     return language.strip() or "ch"
 
 
-def _normalize_positive_int(value, field_name: str) -> int:
+def _normalize_positive_int(
+    value,
+    field_name: str,
+    *,
+    max_value: int | None = None,
+) -> int:
     try:
         normalized = int(value)
     except (TypeError, ValueError) as exc:
@@ -193,6 +201,8 @@ def _normalize_positive_int(value, field_name: str) -> int:
 
     if normalized <= 0:
         raise ValueError(f"{field_name} must be a positive integer.")
+    if max_value is not None:
+        normalized = min(normalized, max_value)
     return normalized
 
 
@@ -277,6 +287,7 @@ def _stream_job(
     table_enable,
     server_url,
     max_pages_per_request,
+    processing_window_size,
     output_root,
     timeout_seconds,
 ):
@@ -317,6 +328,11 @@ def _stream_job(
             max_pages_per_request=_normalize_positive_int(
                 max_pages_per_request,
                 "Max Pages Per Chunk",
+            ),
+            processing_window_size=_normalize_positive_int(
+                processing_window_size,
+                "Processing Window Size",
+                max_value=MAX_PROCESSING_WINDOW_SIZE,
             ),
         )
     except Exception as exc:
@@ -368,11 +384,21 @@ def build_app(
     default_backend: str = "vlm-http-client",
     default_output_root: str = str(TEMP_WORKSPACE_ROOT),
     default_max_pages_per_request: int = MAX_PAGES_PER_REQUEST,
+    default_processing_window_size: int = DEFAULT_PROCESSING_WINDOW_SIZE,
+    default_timeout_seconds: int = DEFAULT_CHUNK_TIMEOUT_SECONDS,
 ) -> gr.Blocks:
     if default_backend not in BACKEND_CHOICES:
         default_backend = "vlm-http-client"
     if default_max_pages_per_request <= 0:
         default_max_pages_per_request = MAX_PAGES_PER_REQUEST
+    if default_processing_window_size <= 0:
+        default_processing_window_size = DEFAULT_PROCESSING_WINDOW_SIZE
+    default_processing_window_size = min(
+        default_processing_window_size,
+        MAX_PROCESSING_WINDOW_SIZE,
+    )
+    if default_timeout_seconds <= 0:
+        default_timeout_seconds = DEFAULT_CHUNK_TIMEOUT_SECONDS
 
     with gr.Blocks(title="MinerU OCR WebUI") as app:
         gr.Markdown(
@@ -425,6 +451,15 @@ def build_app(
                 precision=0,
                 info="Larger chunks reduce task count but increase per-task runtime and memory use.",
             )
+            processing_window_size = gr.Number(
+                label="Processing Window Size",
+                value=default_processing_window_size,
+                precision=0,
+                info=(
+                    "Pages processed per VLM/hybrid inference window inside each chunk. "
+                    f"Values above {MAX_PROCESSING_WINDOW_SIZE} are clamped."
+                ),
+            )
             output_root = gr.Textbox(
                 label="Job Output Root",
                 value=default_output_root,
@@ -432,7 +467,7 @@ def build_app(
             )
             timeout_seconds = gr.Number(
                 label="Per Chunk Timeout (seconds)",
-                value=7200,
+                value=default_timeout_seconds,
                 precision=0,
             )
 
@@ -486,6 +521,7 @@ def build_app(
                 table_enable,
                 server_url,
                 max_pages_per_request,
+                processing_window_size,
                 output_root,
                 timeout_seconds,
             ],
@@ -504,6 +540,8 @@ def launch(
     default_backend: str = "vlm-http-client",
     default_output_root: str = str(TEMP_WORKSPACE_ROOT),
     default_max_pages_per_request: int = MAX_PAGES_PER_REQUEST,
+    default_processing_window_size: int = DEFAULT_PROCESSING_WINDOW_SIZE,
+    default_timeout_seconds: int = DEFAULT_CHUNK_TIMEOUT_SECONDS,
 ) -> None:
     _prepare_launch_workspace(default_output_root)
     app = build_app(
@@ -512,5 +550,7 @@ def launch(
         default_backend=default_backend,
         default_output_root=default_output_root,
         default_max_pages_per_request=default_max_pages_per_request,
+        default_processing_window_size=default_processing_window_size,
+        default_timeout_seconds=default_timeout_seconds,
     )
     app.launch(server_name=host, server_port=port)

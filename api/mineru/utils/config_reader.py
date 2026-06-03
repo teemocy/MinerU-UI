@@ -1,6 +1,8 @@
 # Copyright (c) Opendatalab. All rights reserved.
 import json
 import os
+from contextlib import contextmanager
+from contextvars import ContextVar
 from loguru import logger
 
 try:
@@ -13,6 +15,11 @@ except ImportError:
 
 # 定义配置文件名常量
 CONFIG_FILE_NAME = os.getenv('MINERU_TOOLS_CONFIG_JSON', 'mineru.json')
+MAX_PROCESSING_WINDOW_SIZE = 64
+_processing_window_size_override: ContextVar[int | None] = ContextVar(
+    "mineru_processing_window_size_override",
+    default=None,
+)
 
 
 def read_config():
@@ -128,18 +135,46 @@ def get_ocr_det_mask_inline_formula_enable(enable):
     return enable
 
 
+def _coerce_positive_window_size(value, default: int | None = None) -> int | None:
+    try:
+        window_size = int(value)
+    except (TypeError, ValueError):
+        return default
+    return min(MAX_PROCESSING_WINDOW_SIZE, max(1, window_size))
+
+
+def clamp_processing_window_size(value: int | None) -> int | None:
+    return _coerce_positive_window_size(value) if value is not None else None
+
+
+@contextmanager
+def processing_window_size_context(value: int | None):
+    token = _processing_window_size_override.set(
+        _coerce_positive_window_size(value)
+        if value is not None
+        else None
+    )
+    try:
+        yield
+    finally:
+        _processing_window_size_override.reset(token)
+
+
 def get_processing_window_size(default: int = 64) -> int:
+    override = _processing_window_size_override.get()
+    if override is not None:
+        return override
+
     value = os.getenv('MINERU_PROCESSING_WINDOW_SIZE')
     if value is None:
         return default
-    try:
-        window_size = int(value)
-    except ValueError:
+    window_size = _coerce_positive_window_size(value)
+    if window_size is None:
         logger.warning(
             f"Invalid MINERU_PROCESSING_WINDOW_SIZE value: {value}, use default {default}"
         )
         return default
-    return max(1, window_size)
+    return window_size
 
 
 def get_max_concurrent_requests(default: int = 3) -> int:

@@ -12,10 +12,23 @@ from loguru import logger
 from mineru.cli import api_client
 
 
-TRANSIENT_BACKEND_ERROR_PATTERNS = ("already borrowed",)
+TRANSIENT_BACKEND_ERROR_PATTERNS = (
+    "already borrowed",
+    "engine core initialization failed",
+    "no available memory for the cache blocks",
+)
+TRANSIENT_API_CONNECTION_ERROR_PATTERNS = (
+    "connection reset by peer",
+    "connection refused",
+    "connecterror",
+    "readerror",
+    "remoteprotocolerror",
+    "server disconnected",
+)
 TRANSIENT_BACKEND_RETRY_LIMIT = 2
 TRANSIENT_BACKEND_RETRY_BACKOFF_SECONDS = 2.0
-TRANSIENT_BACKEND_RETRY_BACKOFF_CAP_SECONDS = 8.0
+TRANSIENT_BACKEND_RETRY_BACKOFF_CAP_SECONDS = 30.0
+DEFAULT_CHUNK_TIMEOUT_SECONDS = 43200
 
 
 @dataclass(frozen=True)
@@ -30,7 +43,8 @@ class WorkerTask:
     formula_enable: bool
     table_enable: bool
     server_url: str | None
-    timeout_seconds: int = 7200
+    processing_window_size: int
+    timeout_seconds: int = DEFAULT_CHUNK_TIMEOUT_SECONDS
 
 
 @dataclass(frozen=True)
@@ -53,10 +67,11 @@ def run_worker_once(task_payload: dict, result_queue) -> None:
 
     task_id: str | None = None
     result_zip_path: Path | None = None
-    total_attempts = 1 + TRANSIENT_BACKEND_RETRY_LIMIT
     deadline = time.monotonic() + task.timeout_seconds
+    attempt = 1
+    backend_retry_count = 0
 
-    for attempt in range(1, total_attempts + 1):
+    while True:
         task_id = None
         result_zip_path = None
         try:
@@ -79,33 +94,36 @@ def run_worker_once(task_payload: dict, result_queue) -> None:
             return
         except Exception as exc:
             error_text = f"{exc}\n{traceback.format_exc()}"
-            should_retry = _should_retry_transient_backend_failure(
-                error_text=error_text,
-                attempt=attempt,
-                total_attempts=total_attempts,
+            transient_kind = _classify_transient_failure(error_text)
+            should_retry = _should_retry_transient_failure(
+                transient_kind=transient_kind,
+                backend_retry_count=backend_retry_count,
                 deadline=deadline,
             )
             if should_retry:
+                if transient_kind == "backend":
+                    backend_retry_count += 1
                 backoff_seconds = min(
                     _compute_transient_retry_backoff_seconds(attempt),
                     _remaining_time_seconds(deadline, minimum=0),
                 )
                 logger.warning(
-                    "Transient VLM backend overload for {} on attempt {}/{}. "
-                    "Retrying in {:.1f}s. task_id={}",
+                    "Transient {} failure for {} on attempt {}. "
+                    "Retrying in {:.1f}s within the per-chunk timeout. task_id={}",
+                    transient_kind,
                     chunk_path.name,
                     attempt,
-                    total_attempts,
                     backoff_seconds,
                     task_id,
                 )
                 if backoff_seconds > 0:
                     time.sleep(backoff_seconds)
+                attempt += 1
                 continue
 
-            if attempt > 1 and _is_transient_backend_failure(error_text):
+            if attempt > 1 and transient_kind is not None:
                 error_text = (
-                    f"Transient backend overload persisted after {attempt} attempt(s) "
+                    f"Transient {transient_kind} failure persisted after {attempt} attempt(s) "
                     f"for {chunk_path.name}.\nLast error:\n{error_text}"
                 )
             result = WorkerResult(
@@ -137,6 +155,7 @@ def _run_worker_task_attempt(
             f"Timed out waiting for MinerU task completion for {chunk_path.name}."
         )
 
+    attempt_deadline = time.monotonic() + timeout_seconds
     base_url = api_client.normalize_base_url(task.api_url)
     form_data = api_client.build_parse_request_form_data(
         lang_list=[task.language],
@@ -155,6 +174,7 @@ def _run_worker_task_attempt(
         response_format_zip=True,
         return_original_file=True,
     )
+    form_data["processing_window_size"] = str(task.processing_window_size)
     upload_assets = [
         api_client.UploadAsset(
             path=chunk_path,
@@ -179,7 +199,7 @@ def _run_worker_task_attempt(
             client=client,
             status_url=submit_response.status_url,
             chunk_label=chunk_path.name,
-            timeout_seconds=timeout_seconds,
+            deadline=attempt_deadline,
         )
 
         result_zip_path = _download_result_zip(
@@ -187,6 +207,7 @@ def _run_worker_task_attempt(
             result_url=submit_response.result_url,
             chunk_label=chunk_path.name,
             output_dir=output_dir,
+            deadline=attempt_deadline,
         )
     return submit_response.task_id, result_zip_path
 
@@ -203,6 +224,22 @@ def _is_transient_backend_failure(error_text: str) -> bool:
     return any(pattern in normalized_error for pattern in TRANSIENT_BACKEND_ERROR_PATTERNS)
 
 
+def _is_transient_api_connection_failure(error_text: str) -> bool:
+    normalized_error = error_text.lower()
+    return any(
+        pattern in normalized_error
+        for pattern in TRANSIENT_API_CONNECTION_ERROR_PATTERNS
+    )
+
+
+def _classify_transient_failure(error_text: str) -> str | None:
+    if _is_transient_api_connection_failure(error_text):
+        return "api-connection"
+    if _is_transient_backend_failure(error_text):
+        return "backend"
+    return None
+
+
 def _compute_transient_retry_backoff_seconds(attempt: int) -> float:
     return min(
         TRANSIENT_BACKEND_RETRY_BACKOFF_CAP_SECONDS,
@@ -210,29 +247,50 @@ def _compute_transient_retry_backoff_seconds(attempt: int) -> float:
     )
 
 
-def _should_retry_transient_backend_failure(
+def _should_retry_transient_failure(
     *,
-    error_text: str,
-    attempt: int,
-    total_attempts: int,
+    transient_kind: str | None,
+    backend_retry_count: int,
     deadline: float,
 ) -> bool:
-    if attempt >= total_attempts:
+    if transient_kind is None:
         return False
-    if not _is_transient_backend_failure(error_text):
+    if deadline - time.monotonic() <= 0:
         return False
-    return deadline - time.monotonic() > 0
+    if transient_kind == "api-connection":
+        return True
+    if transient_kind == "backend":
+        return backend_retry_count < TRANSIENT_BACKEND_RETRY_LIMIT
+    return False
 
 
 def _wait_for_terminal_status(
     client: httpx.Client,
     status_url: str,
     chunk_label: str,
-    timeout_seconds: float,
+    deadline: float,
 ) -> None:
-    deadline = time.monotonic() + timeout_seconds
+    poll_attempt = 1
     while time.monotonic() < deadline:
-        response = client.get(status_url)
+        try:
+            response = client.get(status_url)
+        except (httpx.TimeoutException, httpx.TransportError) as exc:
+            sleep_seconds = min(
+                _compute_transient_retry_backoff_seconds(poll_attempt),
+                _remaining_time_seconds(deadline, minimum=0),
+            )
+            logger.warning(
+                "Transient status polling failure for {}. "
+                "Retrying same task in {:.1f}s within the per-chunk timeout: {}",
+                chunk_label,
+                sleep_seconds,
+                exc,
+            )
+            if sleep_seconds > 0:
+                time.sleep(sleep_seconds)
+            poll_attempt += 1
+            continue
+
         if response.status_code != 200:
             raise RuntimeError(
                 f"Failed to query task status for {chunk_label}: {response.status_code} {response.text}"
@@ -258,12 +316,35 @@ def _download_result_zip(
     result_url: str,
     chunk_label: str,
     output_dir: Path,
+    deadline: float,
 ) -> Path:
-    response = client.get(result_url)
-    if response.status_code != 200:
-        raise RuntimeError(
-            f"Failed to download result ZIP for {chunk_label}: {response.status_code} {response.text}"
-        )
+    download_attempt = 1
+    while True:
+        try:
+            response = client.get(
+                result_url,
+                timeout=api_client.build_result_download_timeout(),
+            )
+            if response.status_code == 200:
+                break
+            raise RuntimeError(
+                f"Failed to download result ZIP for {chunk_label}: {response.status_code} {response.text}"
+            )
+        except (httpx.TimeoutException, httpx.TransportError) as exc:
+            sleep_seconds = min(
+                _compute_transient_retry_backoff_seconds(download_attempt),
+                _remaining_time_seconds(deadline, minimum=0),
+            )
+            logger.warning(
+                "Transient result download failure for {}. "
+                "Retrying same task in {:.1f}s within the per-chunk timeout: {}",
+                chunk_label,
+                sleep_seconds,
+                exc,
+            )
+            if sleep_seconds > 0:
+                time.sleep(sleep_seconds)
+            download_attempt += 1
 
     content_type = response.headers.get("content-type", "")
     if "application/zip" not in content_type:

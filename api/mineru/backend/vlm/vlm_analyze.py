@@ -31,6 +31,7 @@ from ...utils.config_reader import (
     get_processing_window_size,
     get_vlm_http_max_concurrency,
 )
+from ...utils.vllm_compat import patch_mineru_vl_utils_vllm_async_renderer
 
 from ...utils.enum_class import ImageType
 from ...utils.pdfium_guard import (
@@ -42,6 +43,8 @@ from ...utils.models_download_utils import auto_download_and_get_model_root_path
 
 from mineru_vl_utils import MinerUClient
 from packaging import version
+
+patch_mineru_vl_utils_vllm_async_renderer()
 
 
 class ModelSingleton:

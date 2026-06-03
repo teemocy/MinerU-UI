@@ -5,7 +5,12 @@ import tempfile
 
 import click
 
-from mineru.leak_safe_pipeline.webui import DEFAULT_VLM_SERVER_URL, launch
+from mineru.leak_safe_pipeline.webui import (
+    DEFAULT_CHUNK_TIMEOUT_SECONDS,
+    DEFAULT_PROCESSING_WINDOW_SIZE,
+    DEFAULT_VLM_SERVER_URL,
+    launch,
+)
 from mineru.leak_safe_pipeline.splitter import MAX_PAGES_PER_REQUEST
 
 
@@ -46,6 +51,20 @@ from mineru.leak_safe_pipeline.splitter import MAX_PAGES_PER_REQUEST
     show_default=True,
     help="Default value for the WebUI Max Pages Per Chunk setting.",
 )
+@click.option(
+    "--default-processing-window-size",
+    default=DEFAULT_PROCESSING_WINDOW_SIZE,
+    type=click.IntRange(min=1),
+    show_default=True,
+    help="Default value for the WebUI Processing Window Size setting.",
+)
+@click.option(
+    "--default-timeout-seconds",
+    default=DEFAULT_CHUNK_TIMEOUT_SECONDS,
+    type=click.IntRange(min=1),
+    show_default=True,
+    help="Default value for the WebUI Per Chunk Timeout setting.",
+)
 def main(
     host: str,
     port: int,
@@ -54,6 +73,8 @@ def main(
     default_backend: str,
     output_root: str,
     default_max_pages_per_chunk: int,
+    default_processing_window_size: int,
+    default_timeout_seconds: int,
 ) -> None:
     launch(
         host=host,
@@ -63,6 +84,8 @@ def main(
         default_backend=default_backend,
         default_output_root=output_root,
         default_max_pages_per_request=default_max_pages_per_chunk,
+        default_processing_window_size=default_processing_window_size,
+        default_timeout_seconds=default_timeout_seconds,
     )
 
 

@@ -31,3 +31,12 @@ The WebUI's default chunk size is controlled by
 `MINERU_WEBUI_MAX_PAGES_PER_CHUNK` and can also be changed per job in the
 Execution Settings panel. Larger chunks reduce the number of API tasks but
 increase per-task memory use and retry cost.
+
+The WebUI's default VLM/hybrid processing window is controlled by
+`MINERU_WEBUI_PROCESSING_WINDOW_SIZE` and can also be changed per job. Larger
+windows reduce intra-chunk VLM passes but increase peak memory use.
+
+The WebUI's default per-chunk timeout is controlled by
+`MINERU_WEBUI_CHUNK_TIMEOUT_SECONDS` and can also be changed per job. Large
+chunks, such as 899-page chunks, need a larger timeout than the old 7200-second
+default.

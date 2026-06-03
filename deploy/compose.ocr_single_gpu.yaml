@@ -74,6 +74,10 @@ services:
       - /data/ocr-webui
       - --default-max-pages-per-chunk
       - "${MINERU_WEBUI_MAX_PAGES_PER_CHUNK:-299}"
+      - --default-processing-window-size
+      - "${MINERU_WEBUI_PROCESSING_WINDOW_SIZE:-64}"
+      - --default-timeout-seconds
+      - "${MINERU_WEBUI_CHUNK_TIMEOUT_SECONDS:-43200}"
     volumes:
       - ../output/ocr-webui:/data/ocr-webui
       # Uncomment and adjust to enable "Batch Directory Path" against host files.

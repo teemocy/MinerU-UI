@@ -17,6 +17,9 @@ from mineru.leak_safe_pipeline.splitter import PreparedDocument, SplitChunk, TOC
 from mineru.leak_safe_pipeline.worker import WorkerTask, run_worker_once
 
 
+DEFAULT_CHUNK_TIMEOUT_SECONDS = 43200
+
+
 def _utc_now_iso() -> str:
     return datetime.now(timezone.utc).isoformat()
 
@@ -30,8 +33,9 @@ class OCRRequestConfig:
     formula_enable: bool = True
     table_enable: bool = True
     server_url: str | None = None
-    timeout_seconds: int = 7200
+    timeout_seconds: int = DEFAULT_CHUNK_TIMEOUT_SECONDS
     max_pages_per_request: int = 299
+    processing_window_size: int = 64
 
 
 @dataclass
@@ -227,6 +231,7 @@ class LeakSafeTaskManager:
                         formula_enable=request.formula_enable,
                         table_enable=request.table_enable,
                         server_url=request.server_url,
+                        processing_window_size=request.processing_window_size,
                         timeout_seconds=request.timeout_seconds,
                     )
 
